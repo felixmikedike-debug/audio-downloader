@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Piper Audio Downloader</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px 14px;background:#101521;color:#edf2ff;font:16px system-ui,sans-serif}
+  main{max-width:560px;margin:30px auto;background:#1a2333;padding:22px;border:1px solid #303d53;border-radius:18px}
+  h2{margin:0 0 8px}p,small{color:#aab6ca}
+  textarea,input,button{width:100%;font:inherit;border-radius:10px;padding:12px;margin-top:10px}
+  textarea,input{background:#101521;color:#fff;border:1px solid #3b4961}
+  textarea{min-height:150px;resize:vertical}
+  button,a{display:block;text-align:center;border:0;background:#3978ff;color:white;padding:13px;border-radius:10px;margin-top:12px;font-weight:700;text-decoration:none;cursor:pointer}
+  button:disabled{opacity:.55;cursor:wait}
+  audio{width:100%;margin-top:18px}
+  #status{min-height:24px;margin-top:14px;color:#c5d2e8;overflow-wrap:anywhere}
+  .note{font-size:13px;line-height:1.5}
+</style>
+</head>
+<body>
+<main>
+  <h2>Piper Audio Downloader</h2>
+  <p>Turn your text into speech and download the audio.</p>
+  <label for="text">Text to speak</label>
+  <textarea id="text" placeholder="Type or paste your script here..."></textarea>
+  <label for="speed">Speech speed</label>
+  <input id="speed" type="number" min="0.5" max="2" step="0.05" value="0.8">
+  <label for="key">API key (leave empty if not required)</label>
+  <input id="key" type="password" placeholder="Optional API key">
+  <button id="generate">Generate audio</button>
+  <div id="status" role="status"></div>
+  <audio id="player" controls hidden></audio>
+  <a id="download" hidden download="piper-audio.wav">Download audio</a>
+  <p class="note">Server: https://piperphg.onrender.com/tts<br>
+  This uses the same request format as your Talking Host page.</p>
+</main>
+<script>
+const API_URL = "https://piperphg.onrender.com/tts";
+const textBox = document.getElementById("text");
+const speedBox = document.getElementById("speed");
+const keyBox = document.getElementById("key");
+const button = document.getElementById("generate");
+const statusBox = document.getElementById("status");
+const player = document.getElementById("player");
+const download = document.getElementById("download");
+let audioObjectUrl = null;
+
+function base64ToBlob(value, type="audio/wav") {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], {type});
+}
+
+async function getAudioResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("json")) {
+    return await response.blob();
+  }
+
+  const data = await response.json();
+  const audioUrl = data.url || data.audio_url || (data.audio && data.audio.url);
+  const base64 = typeof data.audio === "string" ? data.audio : data.audio_base64;
+
+  if (audioUrl) {
+    const audioResponse = await fetch(audioUrl);
+    if (!audioResponse.ok) throw new Error("Could not download the audio returned by the server.");
+    return await audioResponse.blob();
+  }
+  if (base64) return base64ToBlob(base64);
+  throw new Error("The server returned JSON, but no audio URL or audio data was found.");
+}
+
+button.addEventListener("click", async () => {
+  const text = textBox.value.trim();
+  if (!text) {
+    statusBox.textContent = "Enter some text first.";
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Generating...";
+  statusBox.textContent = "Connecting to Piper server. The first request may take a little longer.";
+  player.hidden = true;
+  download.hidden = true;
+
+  try {
+    const headers = {"Content-Type": "application/json"};
+    const key = keyBox.value.trim();
+    if (key) headers.Authorization = /^\w+\s/.test(key) ? key : "Bearer " + key;
+
+    const speed = Math.max(0.5, Math.min(2, Number(speedBox.value) || 0.8));
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        text,
+        length_scale: Number((1 / speed).toFixed(2)),
+        gap_ms: 400
+      })
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error("Server error " + response.status + (detail ? ": " + detail.slice(0, 250) : ""));
+    }
+
+    const blob = await getAudioResponse(response);
+    if (!blob || !blob.size) throw new Error("The server returned an empty audio file.");
+
+    if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
+    audioObjectUrl = URL.createObjectURL(blob);
+    player.src = audioObjectUrl;
+    player.hidden = false;
+    download.href = audioObjectUrl;
+    const ext = blob.type.includes("mpeg") ? "mp3" : "wav";
+    download.download = "piper-audio." + ext;
+    download.textContent = "⬇ Download audio";
+    download.hidden = false;
+    statusBox.textContent = "Audio generated successfully.";
+    player.play().catch(() => {});
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    statusBox.textContent = /failed to fetch|networkerror|load failed/i.test(message)
+      ? "Could not reach the server. Check that it is awake and allows browser requests (CORS)."
+      : message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Generate audio";
+  }
+});
+</script>
+</body>
+</html>
